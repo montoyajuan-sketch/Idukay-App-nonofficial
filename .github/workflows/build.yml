@@ -7,6 +7,11 @@ on:
       - 'v*'
   workflow_dispatch:
 
+# electron-builder necesita permiso de escritura para crear/actualizar Releases
+# y subir los instaladores como assets.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -23,11 +28,21 @@ jobs:
       - name: Instalar dependencias
         run: npm install
 
+      # El tag es la fuente de verdad para las releases.
+      # Ejemplo: v0.6.8 -> version 0.6.8
+      # Se modifica package.json solo dentro del runner; no se hace commit.
+      - name: Sincronizar versión con el tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          npm version $version --no-git-tag-version
+
       - name: Compilar (build normal, sin publicar release)
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: npx electron-builder --win --publish never
 
-      - name: Compilar y publicar en Releases (solo con un tag v*)
+      - name: Compilar y publicar en Releases
         if: startsWith(github.ref, 'refs/tags/v')
         run: npx electron-builder --win --publish always
         env:
