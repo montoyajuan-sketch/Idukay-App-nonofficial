@@ -7,8 +7,6 @@ on:
       - 'v*'
   workflow_dispatch:
 
-# electron-builder necesita permiso de escritura para crear/actualizar Releases
-# y subir los instaladores como assets.
 permissions:
   contents: write
 
@@ -28,9 +26,6 @@ jobs:
       - name: Instalar dependencias
         run: npm install
 
-      # El tag es la fuente de verdad para las releases.
-      # Ejemplo: v0.6.8 -> version 0.6.8
-      # Se modifica package.json solo dentro del runner; no se hace commit.
       - name: Sincronizar versión con el tag
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
@@ -38,15 +33,36 @@ jobs:
           $version = "${{ github.ref_name }}" -replace '^v', ''
           npm version $version --no-git-tag-version
 
-      - name: Compilar (build normal, sin publicar release)
+      # Build normal para probar desde main.
+      - name: Compilar build normal
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         run: npx electron-builder --win --publish never
 
-      - name: Compilar y publicar en Releases
+      # En releases generamos los 3 formatos:
+      # 1. NSIS Setup (.exe)
+      # 2. Portable (.exe)
+      # 3. Unpacked (ZIP)
+      - name: Compilar Setup, Portable y Unpacked
         if: startsWith(github.ref, 'refs/tags/v')
-        run: npx electron-builder --win --publish always
+        shell: pwsh
+        run: |
+          npx electron-builder --win nsis portable dir --publish never
+          Compress-Archive -Path "dist/win-unpacked/*" -DestinationPath "dist/IdukayApp-${{ github.ref_name }}-unpacked.zip" -Force
+
+      - name: Publicar archivos en GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: IdukayApp ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.exe
+            dist/*.zip
+            dist/*.yml
+            dist/*.blockmap
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Subir el instalador como artefacto descargable
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
