@@ -31,7 +31,13 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}" -replace '^v', ''
-          npm version $version --no-git-tag-version
+          $currentVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+
+          if ($currentVersion -ne $version) {
+            npm version $version --no-git-tag-version
+          } else {
+            Write-Host "La versión ya es $version; no es necesario cambiar package.json."
+          }
 
       # Build normal para probar desde main.
       - name: Compilar build normal
