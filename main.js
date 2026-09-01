@@ -649,6 +649,38 @@ function createWindow(url = "https://idukay.net/", { startHidden = false, isMain
     }
   });
 
+  // Algunos sitios (idukay incluido, aparentemente) usan la File System
+  // Access API del navegador (window.showSaveFilePicker) para pedir el
+  // diálogo "Guardar como" directo al sistema operativo, sin pasar por el
+  // gestor de descargas de Chromium. Eso hace que nuestro "will-download"
+  // nunca se entere de nada. La desactivamos en cuanto carga la página para
+  // forzar a que el sitio use su alternativa clásica (<a download>), que sí
+  // interceptamos arriba.
+  win.webContents.on("dom-ready", () => {
+    win.webContents
+      .executeJavaScript(
+        `
+        (function () {
+          try {
+            if ("showSaveFilePicker" in window) {
+              delete window.showSaveFilePicker;
+            }
+            if ("chooseFileSystemEntries" in window) {
+              delete window.chooseFileSystemEntries;
+            }
+          } catch (e) {
+            // Si el navegador no permite borrar la propiedad, la anulamos igual.
+            try {
+              window.showSaveFilePicker = undefined;
+              window.chooseFileSystemEntries = undefined;
+            } catch (e2) {}
+          }
+        })();
+        `
+      )
+      .catch(() => {});
+  });
+
   win.loadURL(url);
 
   return win;
