@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Notificaciones de descarga</title>
+<style>
+  :root {
+    --card-bg: #ffffff;
+    --border: #e2e2e2;
+    --text: #1f1f1f;
+    --muted: #6b6b6b;
+    --accent: #1a73e8;
+    --track: #e8eaed;
+    --shadow: rgba(0,0,0,0.22);
+    --bad: #d0342c;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font-family: "Segoe UI", Roboto, Arial, sans-serif;
+  }
+
+  #notif-stack {
+    position: absolute;
+    bottom: 14px;
+    right: 14px;
+    left: 14px;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 10px;
+  }
+
+  .notif {
+    pointer-events: auto;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 6px 20px var(--shadow);
+    padding: 14px 14px 12px 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    opacity: 0;
+    transform: translateY(24px) scale(0.98);
+    transition: transform 0.32s cubic-bezier(.2,.8,.2,1), opacity 0.32s ease;
+  }
+  .notif.show { opacity: 1; transform: translateY(0) scale(1); }
+  .notif.pushed { transform: translateY(0) scale(0.97); opacity: 0.85; }
+  .notif.leaving { opacity: 0; transform: translateY(-14px) scale(0.96); }
+
+  .notif-icon {
+    flex: 0 0 auto;
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: #e8f0fe;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .notif-icon svg { width: 20px; height: 20px; }
+  .notif-icon.spinning svg { animation: spin 1s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+  .notif-body { flex: 1 1 auto; min-width: 0; }
+  .notif-title { font-size: 13.5px; line-height: 1.35; color: var(--text); margin: 0 0 6px 0; word-break: break-word; }
+  .notif-title b { font-weight: 600; }
+
+  .progress-track { width: 100%; height: 6px; background: var(--track); border-radius: 4px; overflow: hidden; margin-bottom: 6px; }
+  .progress-fill { height: 100%; width: 0%; background: var(--accent); border-radius: 4px; transition: width 0.25s ease; }
+  .progress-meta { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+
+  .notif-actions { display: flex; justify-content: flex-end; }
+  .notif-open-btn, .notif-cancel-btn {
+    background: transparent; border: 1px solid var(--accent); color: var(--accent);
+    font-size: 12.5px; font-weight: 500; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .notif-open-btn:hover { background: var(--accent); color: #fff; }
+  .notif-cancel-btn { border-color: var(--bad); color: var(--bad); }
+  .notif-cancel-btn:hover { background: var(--bad); color: #fff; }
+
+  .notif-close {
+    flex: 0 0 auto; width: 22px; height: 22px; border: none; background: transparent;
+    color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; transition: background 0.15s ease;
+  }
+  .notif-close:hover { background: #eeeeee; }
+</style>
+</head>
+<body>
+  <div id="notif-stack"></div>
+
+  <script>
+    const stack = document.getElementById("notif-stack");
+    const notifElements = new Map(); // id de descarga -> elemento DOM
+
+    function iconDownloadSVG() {
+      return `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 3v10m0 0l4-4m-4 4l-4-4" stroke="#1a73e8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M5 17v2a2 2 0 002 2h10a2 2 0 002-2v-2" stroke="#1a73e8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+    }
+    function iconSpinnerSVG() {
+      return `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="12" cy="12" r="9" stroke="#dbe6fb" stroke-width="3"/>
+        <path d="M21 12a9 9 0 00-9-9" stroke="#1a73e8" stroke-width="3" stroke-linecap="round"/>
+      </svg>`;
+    }
+
+    function formatBytes(bytes) {
+      if (bytes == null) return "";
+      if (bytes < 1024) return bytes.toFixed(0) + " B";
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+      if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+      return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+    }
+    function formatTime(seconds) {
+      if (seconds == null || !isFinite(seconds) || seconds < 0) return "calculando...";
+      if (seconds < 1) return "menos de 1 s";
+      if (seconds < 60) return Math.ceil(seconds) + " s";
+      const m = Math.floor(seconds / 60);
+      const s = Math.ceil(seconds % 60);
+      return `${m} min ${s} s`;
+    }
+
+    function reportHasContent() {
+      window.overlayAPI.reportHasContent(stack.children.length > 0);
+    }
+
+    // Sonido corto generado con Web Audio API (sin necesidad de archivos .mp3/.wav).
+    let audioCtx = null;
+    function playChime() {
+      try {
+        audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880, now);
+        osc.frequency.exponentialRampToValueAtTime(1320, now + 0.12);
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.25, now + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(now);
+        osc.stop(now + 0.4);
+      } catch (err) {
+        // Silencioso si el navegador bloquea audio sin interacción previa del usuario.
+      }
+    }
+
+    function pushExisting() {
+      stack.querySelectorAll(".notif.show").forEach((n) => n.classList.add("pushed"));
+    }
+
+    function removeNotifElement(el) {
+      el.classList.add("leaving");
+      el.classList.remove("show");
+      el.addEventListener("transitionend", () => {
+        el.remove();
+        reportHasContent();
+      }, { once: true });
+    }
+
+    function createProgressNotif(id, fileName) {
+      pushExisting();
+      const el = document.createElement("div");
+      el.className = "notif";
+      el.dataset.id = id;
+      el.innerHTML = `
+        <div class="notif-icon spinning">${iconSpinnerSVG()}</div>
+        <div class="notif-body">
+          <p class="notif-title">Descargando &laquo;<b>${fileName}</b>&raquo;</p>
+          <div class="progress-track"><div class="progress-fill"></div></div>
+          <div class="progress-meta">
+            <span class="meta-speed">0 KB/s</span>
+            <span class="meta-eta">calculando...</span>
+          </div>
+          <div class="notif-actions"><button class="notif-cancel-btn">Cancelar</button></div>
+        </div>
+        <button class="notif-close" aria-label="Cerrar">&times;</button>
+      `;
+      stack.insertBefore(el, stack.firstChild);
+      requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("show")));
+      el.querySelector(".notif-cancel-btn").addEventListener("click", () => {
+        window.overlayAPI.cancelDownload(id);
+      });
+      el.querySelector(".notif-close").addEventListener("click", () => removeNotifElement(el));
+      notifElements.set(id, el);
+      reportHasContent();
+    }
+
+    function updateProgressNotif(id, payload) {
+      const el = notifElements.get(id);
+      if (!el) return;
+      const fill = el.querySelector(".progress-fill");
+      const speedEl = el.querySelector(".meta-speed");
+      const etaEl = el.querySelector(".meta-eta");
+
+      if (payload.totalBytes) {
+        fill.style.width = Math.min(100, payload.percent).toFixed(1) + "%";
+        etaEl.textContent = payload.percent >= 100
+          ? "finalizando..."
+          : formatTime(payload.etaSeconds) + " restante";
+      } else {
+        // Servidor no envía tamaño total: mostramos lo descargado en vez de un %.
+        fill.style.width = "100%";
+        fill.style.opacity = "0.35";
+        etaEl.textContent = formatBytes(payload.receivedBytes) + " descargados";
+      }
+      speedEl.textContent = formatBytes(payload.speed) + "/s";
+    }
+
+    function finishProgressNotif(id) {
+      const el = notifElements.get(id);
+      if (el) {
+        removeNotifElement(el);
+        notifElements.delete(id);
+      }
+    }
+
+    function createCompletedToast(fileName) {
+      pushExisting();
+      playChime();
+      const el = document.createElement("div");
+      el.className = "notif";
+      el.innerHTML = `
+        <div class="notif-icon">${iconDownloadSVG()}</div>
+        <div class="notif-body">
+          <p class="notif-title">Descarga completada &laquo;<b>${fileName}</b>&raquo; en la carpeta Downloads</p>
+          <div class="notif-actions"><button class="notif-open-btn">Abrir carpeta</button></div>
+        </div>
+        <button class="notif-close" aria-label="Cerrar">&times;</button>
+      `;
+      stack.insertBefore(el, stack.firstChild);
+      requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("show")));
+      el.querySelector(".notif-open-btn").addEventListener("click", () => {
+        window.overlayAPI.openDownloadsFolder();
+      });
+      el.querySelector(".notif-close").addEventListener("click", () => removeNotifElement(el));
+      reportHasContent();
+      setTimeout(() => { if (el.isConnected) removeNotifElement(el); }, 8000);
+    }
+
+    function createFailedToast(fileName) {
+      pushExisting();
+      playChime();
+      const el = document.createElement("div");
+      el.className = "notif";
+      el.innerHTML = `
+        <div class="notif-icon" style="background:#fdecea;">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" stroke="#d0342c" stroke-width="2"/>
+            <path d="M9 9l6 6M15 9l-6 6" stroke="#d0342c" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="notif-body"><p class="notif-title">No se pudo verificar la descarga de &laquo;<b>${fileName}</b>&raquo;</p></div>
+        <button class="notif-close" aria-label="Cerrar">&times;</button>
+      `;
+      stack.insertBefore(el, stack.firstChild);
+      requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("show")));
+      el.querySelector(".notif-close").addEventListener("click", () => removeNotifElement(el));
+      reportHasContent();
+      setTimeout(() => { if (el.isConnected) removeNotifElement(el); }, 8000);
+    }
+
+    window.overlayAPI.onDownloadEvent((payload) => {
+      switch (payload.type) {
+        case "started":
+          createProgressNotif(payload.id, payload.fileName);
+          break;
+        case "progress":
+          updateProgressNotif(payload.id, payload);
+          break;
+        case "completed":
+          finishProgressNotif(payload.id);
+          setTimeout(() => createCompletedToast(payload.fileName), 350);
+          break;
+        case "failed":
+          finishProgressNotif(payload.id);
+          setTimeout(() => createFailedToast(payload.fileName), 350);
+          break;
+        case "cancelled":
+          finishProgressNotif(payload.id);
+          break;
+      }
+    });
+  </script>
+</body>
+</html>

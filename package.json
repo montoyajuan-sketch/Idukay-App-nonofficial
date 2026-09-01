@@ -1,0 +1,50 @@
+{
+  "name": "idukay-app",
+  "version": "1.0.0",
+  "description": "App de escritorio no oficial que carga idukay.net. No tiene afiliación con Idukay ni con los colegios que lo usan.",
+  "author": "Juan Pablo Montoya Tomala",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "build": {
+    "appId": "com.idukay.app",
+    "productName": "IdukayApp",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "notifications.html",
+      "notifications-preload.js",
+      "dnd-custom.html",
+      "dnd-custom-preload.js",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "montoyajuan-sketch",
+        "repo": "Idukay-App-nonofficial"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  }
+}
