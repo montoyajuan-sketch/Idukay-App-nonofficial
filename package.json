@@ -1,6 +1,6 @@
 {
   "name": "idukay-app",
-  "version": "1.0.0",
+  "version": "0.7.0",
   "description": "App de escritorio no oficial que carga idukay.net. No tiene afiliación con Idukay ni con los colegios que lo usan.",
   "author": "Juan Pablo Montoya Tomala",
   "main": "main.js",
@@ -20,6 +20,7 @@
       "notifications-preload.js",
       "dnd-custom.html",
       "dnd-custom-preload.js",
+      "build/icon.ico",
       "package.json"
     ],
     "win": {

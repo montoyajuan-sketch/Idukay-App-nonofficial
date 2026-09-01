@@ -26,6 +26,7 @@ let dndCustomWin = null;
 let dndUntil = null; // timestamp (ms) hasta cuándo dura el "No Molestar", o null si está apagado
 let tray = null;
 let isQuitting = false;
+let refreshTrayMenu = () => {};
 
 const AUTO_START_ARGS = ["--hidden"];
 
@@ -121,11 +122,13 @@ function formatDndUntil(ts) {
 function setDnd(durationMs) {
   dndUntil = Date.now() + durationMs;
   createMenu(); // refresca la etiqueta del menú con la hora hasta la que dura
+  refreshTrayMenu();
 }
 
 function clearDnd() {
   dndUntil = null;
   createMenu();
+  refreshTrayMenu();
 }
 
 function openCustomDndWindow() {
@@ -135,6 +138,13 @@ function openCustomDndWindow() {
   }
 
   const parentWin = [...contentWindows][0];
+
+  // Un modal "hijo" de una ventana oculta (minimizada a la bandeja) no
+  // registra bien los clics en Windows. Si la principal estaba oculta,
+  // la mostramos primero para que el modal funcione normal.
+  if (parentWin && !parentWin.isDestroyed() && !parentWin.isVisible()) {
+    parentWin.show();
+  }
 
   dndCustomWin = new BrowserWindow({
     width: 360,
@@ -291,6 +301,27 @@ function createTray(mainWin) {
       },
       { type: "separator" },
       {
+        label: "No Molestar por",
+        submenu: [
+          { label: "5 minutos", click: () => setDnd(5 * 60 * 1000) },
+          { label: "10 minutos", click: () => setDnd(10 * 60 * 1000) },
+          { label: "15 minutos", click: () => setDnd(15 * 60 * 1000) },
+          { label: "30 minutos", click: () => setDnd(30 * 60 * 1000) },
+          { label: "1 hora", click: () => setDnd(60 * 60 * 1000) },
+          { label: "2 horas", click: () => setDnd(2 * 60 * 60 * 1000) },
+          { type: "separator" },
+          { label: "Personalizado...", click: () => openCustomDndWindow() },
+        ],
+      },
+      {
+        label: isDndActive()
+          ? `No Molestar activo hasta las ${formatDndUntil(dndUntil)} (click para desactivar)`
+          : "No Molestar: desactivado",
+        enabled: isDndActive(),
+        click: () => clearDnd(),
+      },
+      { type: "separator" },
+      {
         label: "Cerrar sesión (limpiar cookies)",
         click: () => confirmAndClearSession(mainWin),
       },
@@ -313,6 +344,7 @@ function createTray(mainWin) {
   };
 
   rebuildTrayMenu();
+  refreshTrayMenu = rebuildTrayMenu;
 
   trayInstance.on("click", () => {
     if (mainWin.isVisible()) {
@@ -889,8 +921,11 @@ app.whenReady().then(() => {
 
   ipcMain.on("cancel-download", (event, id) => {
     const item = activeDownloads.get(id);
-    if (item && !item.isDestroyed?.()) {
+    if (!item) return;
+    try {
       item.cancel();
+    } catch (err) {
+      // La descarga ya pudo haber terminado justo antes de que llegara el cancel.
     }
   });
 
