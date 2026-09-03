@@ -22,6 +22,21 @@ try {
   // la app sigue funcionando normal, solo sin autoactualización.
 }
 
+// Red de seguridad: si algo revienta sin capturar en el proceso principal,
+// mostramos un diálogo en vez de que la app se cierre en silencio sin
+// explicación (como pasaba antes con el error de permisos de carpeta).
+process.on("uncaughtException", (err) => {
+  console.error("Error no capturado:", err);
+  try {
+    dialog.showErrorBox(
+      "IdukayApp encontró un error",
+      `La app tuvo un problema inesperado y puede que necesite reiniciarse.\n\n${err && err.message ? err.message : err}`
+    );
+  } catch (dialogErr) {
+    // Si ni el diálogo de error se puede mostrar, no hay mucho más que hacer.
+  }
+});
+
 let downloadsPath;
 let overlayWin = null;
 let dndCustomWin = null;
@@ -84,8 +99,17 @@ function ensureDownloadsFolder() {
   const basePath = app.isPackaged
     ? path.dirname(app.getPath("exe"))
     : __dirname;
-  downloadsPath = path.join(basePath, "downloads");
-  if (!fs.existsSync(downloadsPath)) {
+  const preferredPath = path.join(basePath, "downloads");
+
+  try {
+    fs.mkdirSync(preferredPath, { recursive: true });
+    downloadsPath = preferredPath;
+  } catch (err) {
+    // No se pudo escribir junto al .exe (típicamente porque se instaló en
+    // "Program Files" y hace falta ser administrador). En vez de tronar,
+    // caemos a la carpeta de datos del usuario, que siempre es escribible
+    // sin importar dónde haya quedado instalada la app.
+    downloadsPath = path.join(app.getPath("userData"), "downloads");
     fs.mkdirSync(downloadsPath, { recursive: true });
   }
 }
