@@ -1,3 +1,14 @@
+# v0.8.1
+
+## Arreglos
+
+- El build de **Linux (AppImage) fallaba** porque `electron-builder` exige un ícono cuadrado en `.png` (mínimo 256×256) y solo teníamos el `.ico` de Windows. Se agregó `build/icon.png` (recortado del logo, 1024×1024) y se configuró como ícono para las plataformas `linux` y `mac` en `package.json`.
+- El build de **macOS ya salía bien desde la v0.8.0** (no necesitaba este fix, pero se benefició igual: ahora usa el ícono propio de la app en vez del genérico de Electron).
+
+---
+
+# v0.8.0
+
 ## Novedades
 
 - **Actualizaciones automáticas completas**: la app ahora detecta sola cuando hay una versión nueva en GitHub Releases (al abrir y cada 4 horas), la descarga en segundo plano mostrando una barra de progreso, y la instala:
@@ -22,3 +33,4 @@
 - Al cancelar una descarga justo cuando ya había terminado, podía tirar un error sin capturar; ahora se maneja con `try/catch`.
 - La ventana de "No molestar personalizado" no respondía a ningún click (ni el input, ni el select, ni los botones) cuando se abría con la ventana principal minimizada en la bandeja — era un problema de ventanas modales de Windows atadas a una ventana padre oculta. Ahora la ventana principal se muestra primero automáticamente antes de abrir el modal.
 - Se corrigieron permisos del workflow de GitHub Actions (`permissions: contents: write`), que impedían que se publicaran los releases automáticamente.
+
