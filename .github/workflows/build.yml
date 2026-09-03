@@ -1,4 +1,4 @@
-name: Build Windows App
+name: Build Multi-Platform App
 
 on:
   push:
@@ -12,7 +12,25 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+          - os: ubuntu-latest
+            platform: linux
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      # Evita que electron-builder intente firmar el build de macOS. Sin esto
+      # a veces falla buscando un certificado que no existe (no tenemos cuenta
+      # de Apple Developer). El resultado queda sin firmar/notarizar: al abrirlo
+      # en Mac, Gatekeeper va a pedir "Abrir de todas formas" la primera vez.
+      CSC_IDENTITY_AUTO_DISCOVERY: false
 
     steps:
       - name: Descargar el código
@@ -39,21 +57,45 @@ jobs:
             Write-Host "La versión ya es $version; no es necesario cambiar package.json."
           }
 
-      # Build normal para probar desde main.
+          # La dejamos disponible para los pasos siguientes (ej. nombrar el zip de Windows).
+          echo "APP_VERSION=$version" >> $env:GITHUB_ENV
+
+      # Build normal para probar desde main (un formato por plataforma, sin publicar).
       - name: Compilar build normal
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: npx electron-builder --win --publish never
+        run: npx electron-builder --${{ matrix.platform }} --publish never
 
-      # En releases generamos los 3 formatos:
-      # 1. NSIS Setup (.exe)
-      # 2. Portable (.exe)
-      # 3. Unpacked (ZIP)
-      - name: Compilar Setup, Portable y Unpacked
-        if: startsWith(github.ref, 'refs/tags/v')
+      # En Windows, para releases generamos los 3 formatos:
+      # 1. NSIS Setup (.exe)  2. Portable (.exe)  3. Unpacked (ZIP)
+      - name: "Release: compilar Setup, Portable y Unpacked (Windows)"
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.platform == 'win'
         shell: pwsh
         run: |
           npx electron-builder --win nsis portable dir --publish never
-          Compress-Archive -Path "dist/win-unpacked/*" -DestinationPath "dist/IdukayApp-${{ github.ref_name }}-unpacked.zip" -Force
+          Compress-Archive -Path "dist/win-unpacked/*" -DestinationPath "dist/IdukayApp-${{ env.APP_VERSION }}-windows-unpacked.zip" -Force
+
+      # En macOS, para releases generamos .dmg y .zip (sin firmar).
+      - name: "Release: compilar dmg + zip (macOS)"
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.platform == 'mac'
+        run: npx electron-builder --mac dmg zip --publish never
+
+      # En Linux, para releases generamos un AppImage (no necesita firma ni instalación).
+      - name: "Release: compilar AppImage (Linux)"
+        if: startsWith(github.ref, 'refs/tags/v') && matrix.platform == 'linux'
+        run: npx electron-builder --linux AppImage --publish never
+
+      - name: Preparar notas de la release
+        id: notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          if [ -f "RELEASE_NOTES.md" ] && [ -s "RELEASE_NOTES.md" ]; then
+            echo "Usando RELEASE_NOTES.md como notas del release"
+            echo "has_notes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No hay RELEASE_NOTES.md (o está vacío); se generan notas automáticas"
+            echo "has_notes=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Publicar archivos en GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -61,18 +103,24 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: IdukayApp ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.has_notes == 'true' && 'RELEASE_NOTES.md' || '' }}
+          generate_release_notes: ${{ steps.notes.outputs.has_notes != 'true' }}
           files: |
             dist/*.exe
+            dist/*.dmg
+            dist/*.AppImage
             dist/*.zip
             dist/*.yml
             dist/*.blockmap
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Subir el instalador como artefacto descargable
+      - name: Subir build como artefacto descargable
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
         with:
-          name: idukay-app-windows
-          path: dist/*.exe
+          name: idukay-app-${{ matrix.platform }}
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.AppImage

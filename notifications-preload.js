@@ -9,4 +9,5 @@ contextBridge.exposeInMainWorld("overlayAPI", {
   openDownloadsFolder: () => ipcRenderer.send("open-downloads-folder"),
   cancelDownload: (id) => ipcRenderer.send("cancel-download", id),
   reportHasContent: (hasContent) => ipcRenderer.send("overlay-has-content", hasContent),
+  restartAndInstall: () => ipcRenderer.send("restart-and-install"),
 });

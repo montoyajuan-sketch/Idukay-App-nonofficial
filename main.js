@@ -12,6 +12,8 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const https = require("https");
+const { spawn } = require("child_process");
 let autoUpdater = null;
 try {
   ({ autoUpdater } = require("electron-updater"));
@@ -40,6 +42,7 @@ const dndCategorySettings = {
   notificaciones: true, // alertas de tareas/calificaciones/etc.
   correos: true, // mensajes/correos nuevos
   descargas: true, // descargas completadas/fallidas
+  actualizaciones: true, // avisos de nueva versión de la app disponible
 };
 
 // Ventanas de contenido (las que muestran idukay.net). No incluye el overlay,
@@ -148,7 +151,7 @@ function openCustomDndWindow() {
 
   dndCustomWin = new BrowserWindow({
     width: 360,
-    height: 440,
+    height: 480,
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -217,6 +220,26 @@ async function confirmAndClearSession(mainWin) {
   }
 }
 
+const RELEASES_URL = "https://github.com/montoyajuan-sketch/Idukay-App-nonofficial/releases/latest";
+
+// Portable (.exe suelto): Electron/electron-builder setean esta variable de
+// entorno solo cuando corre desde ese formato. Es el único caso donde SÍ
+// tiene sentido auto-reemplazar el archivo nosotros mismos (es un solo
+// archivo, se puede descargar uno nuevo y sustituirlo).
+function isPortableExeBuild() {
+  return Boolean(process.env.PORTABLE_EXECUTABLE_DIR);
+}
+
+// "unpacked" (win-unpacked sin instalar): es una carpeta completa, no un solo
+// archivo. Ahí no intentamos reemplazar nada automáticamente, solo avisamos.
+function isUnpackedBuild() {
+  try {
+    return /win-unpacked/i.test(app.getPath("exe"));
+  } catch (err) {
+    return false;
+  }
+}
+
 function checkForAppUpdates(manual) {
   if (!autoUpdater) {
     if (manual) {
@@ -240,27 +263,308 @@ function checkForAppUpdates(manual) {
     return;
   }
 
-  autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+  autoUpdater.checkForUpdates().catch(() => {});
+}
+
+function showNativeUpdateReadyNotification(version) {
+  if (!Notification.isSupported()) return;
+  if (isDndActive() && !dndCategorySettings.actualizaciones) return;
+
+  const notif = new Notification({
+    title: "IdukayApp",
+    body: `Actualización v${version} lista. Click para reiniciar e instalar.`,
+  });
+  notif.on("click", () => {
+    if (autoUpdater) autoUpdater.quitAndInstall();
+  });
+  notif.show();
+}
+
+// Para la copia "unpacked" (carpeta, no un solo archivo): no se puede
+// reemplazar sola de forma segura, solo avisamos y el usuario la baja él mismo.
+function showManualUpdateAvailableNotification(version) {
+  if (isDndActive() && !dndCategorySettings.actualizaciones) return;
+
+  if (isAppFocused()) {
+    dialog
+      .showMessageBox({
+        type: "info",
+        title: "Actualización disponible",
+        message: `Hay una nueva versión de IdukayApp (v${version}).`,
+        detail:
+          "Esta copia no está instalada (carpeta sin empaquetar), así que no se puede actualizar sola. Descárgala manualmente desde GitHub.",
+        buttons: ["Abrir página de descarga", "Más tarde"],
+        defaultId: 0,
+      })
+      .then(({ response }) => {
+        if (response === 0) shell.openExternal(RELEASES_URL);
+      });
+  } else if (Notification.isSupported()) {
+    const notif = new Notification({
+      title: "IdukayApp",
+      body: `Hay una nueva versión (v${version}). Click para descargarla.`,
+    });
+    notif.on("click", () => shell.openExternal(RELEASES_URL));
+    notif.show();
+  }
+}
+
+// --- Auto-reemplazo del portable ---
+
+// Sigue redirects (los links de assets de GitHub Releases redirigen a
+// objects.githubusercontent.com) y devuelve el JSON parseado.
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { "User-Agent": "IdukayApp-updater" } }, (res) => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        res.resume();
+        resolve(fetchJson(res.headers.location));
+        return;
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode} consultando ${url}`));
+        return;
+      }
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    req.on("error", reject);
+  });
+}
+
+// Descarga un archivo siguiendo redirects, reportando progreso en tiempo real.
+function downloadFileWithRedirects(url, destPath, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = (currentUrl) => {
+      https
+        .get(currentUrl, { headers: { "User-Agent": "IdukayApp-updater" } }, (res) => {
+          if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+            res.resume();
+            request(res.headers.location);
+            return;
+          }
+          if (res.statusCode !== 200) {
+            reject(new Error(`HTTP ${res.statusCode} descargando ${currentUrl}`));
+            return;
+          }
+
+          const total = Number(res.headers["content-length"]) || 0;
+          let received = 0;
+          const fileStream = fs.createWriteStream(destPath);
+
+          res.on("data", (chunk) => {
+            received += chunk.length;
+            if (onProgress) onProgress(received, total);
+          });
+          res.on("error", reject);
+
+          fileStream.on("finish", () => fileStream.close(() => resolve()));
+          fileStream.on("error", reject);
+
+          res.pipe(fileStream);
+        })
+        .on("error", reject);
+    };
+    request(url);
+  });
+}
+
+// Busca en el último Release de GitHub el asset del portable de Windows,
+// sin asumir el nombre exacto de la versión (evita desfases si el tag y el
+// version de package.json no coinciden letra por letra).
+async function findPortableAssetUrl() {
+  const release = await fetchJson(
+    "https://api.github.com/repos/montoyajuan-sketch/Idukay-App-nonofficial/releases/latest"
+  );
+  const asset = (release.assets || []).find((a) => /windows-portable\.exe$/i.test(a.name));
+  if (!asset) {
+    throw new Error("No se encontró el .exe portable en el último release.");
+  }
+  return asset.browser_download_url;
+}
+
+// Descarga la nueva versión portable (con la misma barra de progreso que
+// usamos para descargas normales), y deja un .bat temporal que:
+// 1) espera a que esta app se cierre, 2) reemplaza el .exe viejo por el
+// nuevo, 3) lo vuelve a abrir, 4) se borra a sí mismo.
+async function downloadAndInstallPortableUpdate(version) {
+  const UPDATE_ID = "portable-update";
+  sendOverlayEvent({ type: "update-started", id: UPDATE_ID, version });
+
+  let downloadUrl;
+  try {
+    downloadUrl = await findPortableAssetUrl();
+  } catch (err) {
+    sendOverlayEvent({ type: "update-download-failed", id: UPDATE_ID });
+    dialog.showErrorBox(
+      "Error al actualizar",
+      "No se pudo encontrar el archivo de la nueva versión: " + err.message
+    );
+    return;
+  }
+
+  const tempNewExePath = path.join(app.getPath("temp"), `idukay-app-update-${Date.now()}.exe`);
+  const targetExePath = process.execPath; // el .exe portable que está corriendo ahora mismo
+
+  let lastBytes = 0;
+  let lastTime = Date.now();
+
+  try {
+    await downloadFileWithRedirects(downloadUrl, tempNewExePath, (received, total) => {
+      const now = Date.now();
+      const dt = (now - lastTime) / 1000;
+      const speed = dt > 0 ? Math.max(0, (received - lastBytes) / dt) : 0;
+      lastBytes = received;
+      lastTime = now;
+
+      sendOverlayEvent({
+        type: "update-progress",
+        id: UPDATE_ID,
+        receivedBytes: received,
+        totalBytes: total,
+        speed,
+        percent: total ? (received / total) * 100 : null,
+      });
+    });
+  } catch (err) {
+    sendOverlayEvent({ type: "update-download-failed", id: UPDATE_ID });
+    dialog.showErrorBox("Error al actualizar", "No se pudo descargar la nueva versión: " + err.message);
+    return;
+  }
+
+  sendOverlayEvent({ type: "update-installing", id: UPDATE_ID });
+
+  const batPath = path.join(app.getPath("temp"), `idukay-app-update-${Date.now()}.bat`);
+  const batContent = [
+    "@echo off",
+    "setlocal",
+    `set "NEWFILE=${tempNewExePath}"`,
+    `set "TARGET=${targetExePath}"`,
+    ":waitloop",
+    'move /Y "%NEWFILE%" "%TARGET%" >nul 2>&1',
+    "if errorlevel 1 (",
+    "  timeout /t 1 /nobreak >nul",
+    "  goto waitloop",
+    ")",
+    'start "" "%TARGET%"',
+    '(goto) 2>nul & del "%~f0"',
+    "",
+  ].join("\r\n");
+
+  fs.writeFileSync(batPath, batContent, "utf8");
+
+  const child = spawn("cmd.exe", ["/c", batPath], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+
+  isQuitting = true;
+  app.quit();
+}
+
+// Ofrece actualizar la copia portable (descarga + reemplazo automático).
+function offerPortableSelfUpdate(version) {
+  if (isDndActive() && !dndCategorySettings.actualizaciones) return;
+
+  if (isAppFocused()) {
+    dialog
+      .showMessageBox({
+        type: "info",
+        title: "Actualización disponible",
+        message: `Hay una nueva versión de IdukayApp (v${version}).`,
+        detail: "Esta es la versión portable. Puedo descargarla y reemplazar este archivo yo mismo.",
+        buttons: ["Actualizar ahora", "Más tarde"],
+        defaultId: 0,
+      })
+      .then(({ response }) => {
+        if (response === 0) downloadAndInstallPortableUpdate(version);
+      });
+  } else if (Notification.isSupported()) {
+    const notif = new Notification({
+      title: "IdukayApp",
+      body: `Hay una nueva versión portable (v${version}). Click para actualizar.`,
+    });
+    notif.on("click", () => downloadAndInstallPortableUpdate(version));
+    notif.show();
+  }
 }
 
 function setupAutoUpdates() {
   if (!autoUpdater || !app.isPackaged) return;
 
-  autoUpdater.autoDownload = true;
+  const portableExe = isPortableExeBuild();
+  const unpacked = isUnpackedBuild();
+  const needsManualFlow = portableExe || unpacked;
 
-  autoUpdater.on("update-downloaded", () => {
-    dialog
-      .showMessageBox({
-        type: "info",
-        title: "Actualización disponible",
-        message: "Se descargó una nueva versión de IdukayApp.",
-        detail: "Se instalará al reiniciar la app.",
-        buttons: ["Reiniciar ahora", "Más tarde"],
-        defaultId: 0,
-      })
-      .then(({ response }) => {
-        if (response === 0) autoUpdater.quitAndInstall();
-      });
+  // En portable/unpacked, apagamos la descarga e instalación automática de
+  // electron-updater por completo: solo se usa para *detectar* que hay algo
+  // nuevo. El portable maneja su propia descarga+reemplazo (arriba); el
+  // unpacked solo recibe un aviso para bajarlo manual.
+  autoUpdater.autoDownload = !needsManualFlow;
+  autoUpdater.autoInstallOnAppQuit = !needsManualFlow;
+
+  const UPDATE_ID = "app-update";
+
+  autoUpdater.on("update-available", (info) => {
+    if (portableExe) {
+      offerPortableSelfUpdate(info.version);
+      return;
+    }
+    if (unpacked) {
+      showManualUpdateAvailableNotification(info.version);
+      return;
+    }
+    sendOverlayEvent({
+      type: "update-started",
+      id: UPDATE_ID,
+      version: info.version,
+    });
+  });
+
+  autoUpdater.on("download-progress", (progress) => {
+    if (needsManualFlow) return; // no debería dispararse: autoDownload está apagado
+    sendOverlayEvent({
+      type: "update-progress",
+      id: UPDATE_ID,
+      receivedBytes: progress.transferred,
+      totalBytes: progress.total,
+      speed: progress.bytesPerSecond,
+      percent: progress.percent,
+    });
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    if (needsManualFlow) return; // no debería dispararse: autoDownload está apagado
+    sendOverlayEvent({ type: "update-ready", id: UPDATE_ID, version: info.version });
+
+    if (isDndActive() && !dndCategorySettings.actualizaciones) return;
+
+    if (isAppFocused()) {
+      // La ventana está a la vista: además del toast, ofrecemos el diálogo clásico.
+      dialog
+        .showMessageBox({
+          type: "info",
+          title: "Actualización disponible",
+          message: `Se descargó IdukayApp v${info.version}.`,
+          detail: "Se instalará al reiniciar la app.",
+          buttons: ["Reiniciar ahora", "Más tarde"],
+          defaultId: 0,
+        })
+        .then(({ response }) => {
+          if (response === 0) autoUpdater.quitAndInstall();
+        });
+    } else {
+      showNativeUpdateReadyNotification(info.version);
+    }
   });
 
   autoUpdater.on("error", (err) => {
@@ -933,6 +1237,10 @@ app.whenReady().then(() => {
     if (overlayWin && !overlayWin.isDestroyed()) {
       overlayWin.setIgnoreMouseEvents(!hasContent, { forward: true });
     }
+  });
+
+  ipcMain.on("restart-and-install", () => {
+    if (autoUpdater) autoUpdater.quitAndInstall();
   });
 
   ipcMain.on("dnd-custom-confirm", (event, { value, unit }) => {

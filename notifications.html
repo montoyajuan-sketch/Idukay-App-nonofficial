@@ -166,7 +166,7 @@
       }, { once: true });
     }
 
-    function createProgressNotif(id, fileName) {
+    function createProgressNotif(id, titleHtml, { cancellable = false } = {}) {
       pushExisting();
       const el = document.createElement("div");
       el.className = "notif";
@@ -174,21 +174,23 @@
       el.innerHTML = `
         <div class="notif-icon spinning">${iconSpinnerSVG()}</div>
         <div class="notif-body">
-          <p class="notif-title">Descargando &laquo;<b>${fileName}</b>&raquo;</p>
+          <p class="notif-title">${titleHtml}</p>
           <div class="progress-track"><div class="progress-fill"></div></div>
           <div class="progress-meta">
             <span class="meta-speed">0 KB/s</span>
             <span class="meta-eta">calculando...</span>
           </div>
-          <div class="notif-actions"><button class="notif-cancel-btn">Cancelar</button></div>
+          ${cancellable ? '<div class="notif-actions"><button class="notif-cancel-btn">Cancelar</button></div>' : ""}
         </div>
         <button class="notif-close" aria-label="Cerrar">&times;</button>
       `;
       stack.insertBefore(el, stack.firstChild);
       requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("show")));
-      el.querySelector(".notif-cancel-btn").addEventListener("click", () => {
-        window.overlayAPI.cancelDownload(id);
-      });
+      if (cancellable) {
+        el.querySelector(".notif-cancel-btn").addEventListener("click", () => {
+          window.overlayAPI.cancelDownload(id);
+        });
+      }
       el.querySelector(".notif-close").addEventListener("click", () => removeNotifElement(el));
       notifElements.set(id, el);
       reportHasContent();
@@ -268,10 +270,68 @@
       setTimeout(() => { if (el.isConnected) removeNotifElement(el); }, 8000);
     }
 
+    function createUpdateReadyToast(version) {
+      pushExisting();
+      playChime();
+      const el = document.createElement("div");
+      el.className = "notif";
+      el.innerHTML = `
+        <div class="notif-icon">${iconDownloadSVG()}</div>
+        <div class="notif-body">
+          <p class="notif-title">Actualización <b>v${version}</b> lista para instalar</p>
+          <div class="notif-actions"><button class="notif-open-btn">Reiniciar ahora</button></div>
+        </div>
+        <button class="notif-close" aria-label="Cerrar">&times;</button>
+      `;
+      stack.insertBefore(el, stack.firstChild);
+      requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("show")));
+      el.querySelector(".notif-open-btn").addEventListener("click", () => {
+        window.overlayAPI.restartAndInstall();
+      });
+      el.querySelector(".notif-close").addEventListener("click", () => removeNotifElement(el));
+      reportHasContent();
+      // Esta no se autocierra sola: es importante que la vea aunque tarde en volver.
+    }
+
+    function markUpdateInstalling(id) {
+      const el = notifElements.get(id);
+      if (!el) return;
+      const etaEl = el.querySelector(".meta-eta");
+      const speedEl = el.querySelector(".meta-speed");
+      if (etaEl) etaEl.textContent = "Instalando...";
+      if (speedEl) speedEl.textContent = "";
+    }
+
+    function createUpdateFailedToast() {
+      pushExisting();
+      playChime();
+      const el = document.createElement("div");
+      el.className = "notif";
+      el.innerHTML = `
+        <div class="notif-icon" style="background:#fdecea;">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="12" r="9" stroke="#d0342c" stroke-width="2"/>
+            <path d="M9 9l6 6M15 9l-6 6" stroke="#d0342c" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="notif-body"><p class="notif-title">No se pudo descargar la actualización</p></div>
+        <button class="notif-close" aria-label="Cerrar">&times;</button>
+      `;
+      stack.insertBefore(el, stack.firstChild);
+      requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("show")));
+      el.querySelector(".notif-close").addEventListener("click", () => removeNotifElement(el));
+      reportHasContent();
+      setTimeout(() => { if (el.isConnected) removeNotifElement(el); }, 8000);
+    }
+
     window.overlayAPI.onDownloadEvent((payload) => {
       switch (payload.type) {
         case "started":
-          createProgressNotif(payload.id, payload.fileName);
+          createProgressNotif(
+            payload.id,
+            `Descargando &laquo;<b>${payload.fileName}</b>&raquo;`,
+            { cancellable: true }
+          );
           break;
         case "progress":
           updateProgressNotif(payload.id, payload);
@@ -286,6 +346,29 @@
           break;
         case "cancelled":
           finishProgressNotif(payload.id);
+          break;
+        case "update-started":
+          createProgressNotif(
+            payload.id,
+            `Descargando actualización <b>v${payload.version}</b>`,
+            { cancellable: false }
+          );
+          break;
+        case "update-progress":
+          updateProgressNotif(payload.id, payload);
+          break;
+        case "update-ready":
+          finishProgressNotif(payload.id);
+          setTimeout(() => createUpdateReadyToast(payload.version), 350);
+          break;
+        case "update-installing":
+          // La app portable está a punto de cerrarse y reemplazarse sola;
+          // solo actualizamos el texto, no hace falta más (se cierra ya).
+          markUpdateInstalling(payload.id);
+          break;
+        case "update-download-failed":
+          finishProgressNotif(payload.id);
+          setTimeout(() => createUpdateFailedToast(), 350);
           break;
       }
     });

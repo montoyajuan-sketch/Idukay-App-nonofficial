@@ -1,6 +1,6 @@
 {
   "name": "idukay-app",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "App de escritorio no oficial que carga idukay.net. No tiene afiliación con Idukay ni con los colegios que lo usan.",
   "author": "Juan Pablo Montoya Tomala",
   "main": "main.js",
@@ -31,7 +31,21 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "artifactName": "${productName}-${version}-windows-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-windows-portable.${ext}"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.education",
+      "artifactName": "${productName}-${version}-mac.${ext}"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Education",
+      "artifactName": "${productName}-${version}-linux.${ext}"
     },
     "publish": [
       {
